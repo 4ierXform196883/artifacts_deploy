@@ -4,21 +4,21 @@
 # если при разделении табуляцией первый элемен совпадает с key
 # возвращается значение на позиции pos (сам key имеет индекс 1)
 get_file_value() {
-  local filename=$1
+  local file=$1
   local key=$2
   local pos=$3
 
-  awk -v key="$key" -v pos="$pos" 'BEGIN {FS="\t"} $1 == key {print $pos}' "$filename"
+  awk -v key="$key" -v pos="$pos" 'BEGIN {FS="\t"} $1 == key {print $pos}' "$file"
 }
 
 # Функция для изменения значения в определенной строке и позиции в файле
 edit_file_value() {
-  local filename=$1
+  local file=$1
   local key=$2
   local pos=$3
   local replacement=$4
 
-  awk -v key="$key" -v pos="$pos" -v replacement="$replacement" 'BEGIN {FS=OFS="\t"} $1 == key {$pos = replacement} 1' "$filename" >temp.txt && mv temp.txt "$filename"
+  awk -v key="$key" -v pos="$pos" -v replacement="$replacement" 'BEGIN {FS=OFS="\t"} $1 == key {$pos = replacement} 1' "$file" >temp.txt && mv temp.txt "$file"
 }
 
 # Функция для проверки ввода
@@ -97,7 +97,7 @@ remove_lines() {
 
 # Функция для получения ключей (первых элементов) из файла
 get_file_keys() {
-  local filename=$1
+  local file=$1
   local -a values
   local line
 
@@ -106,7 +106,7 @@ get_file_keys() {
   # '_' - placeholder переменная для оставшихся элементов строки
   while IFS=$'\t' read -r line _; do
     values+=("$line")
-  done <"$filename"
+  done <"$file"
 
   echo "${values[@]}"
 }
@@ -122,7 +122,7 @@ print_array_indexed() {
   local maxLen=0
 
   # добавляем индекс к каждому элементу
-  # value -> (index) value
+  # vaule -> index) value
   for index in "${!arr[@]}"; do
     indexedItem="$((index + 1))) ${arr[index]}"
     indexed+=("$indexedItem")
@@ -152,13 +152,17 @@ print_array_indexed() {
 print_table() {
   # первый аргумент - имя файла
   local file=$1
+  if [ ! -f $file ]; then
+    echo "File $file does not exist"
+    return 1
+  fi
   shift
   # остальные - заголовки столбцов
   local colNames=("$@")
   # data - массив массивов, каждый массив - столбец
   local -a data
 
-  # Итерируемся по файлу разделяя строки по табуляции
+  # Итериремся по файлу разделяя строки по табуляции
   while IFS=$'\t' read -r -a line; do
     # Итерируемся по элементам строки, index - номер элемента
     for index in "${!line[@]}"; do
@@ -209,11 +213,11 @@ api_fill_project_id() {
   eval "$1=0"
 
   echo "Getting projects..."
-  local project_ids=()
-  local project_paths=()
+  declare -A project_map
   local page=1
   local api_url=$(get_file_value "$config_path" "api_url" 2)
   local token=$(get_file_value "$config_path" "token" 2)
+  
   # Получение списка проектов
   # sed используется для удаления вложенного json'a под ключом "namespace" целиком
   # он не нужен и содежрит поле "id", что помешает парсингу в следующей строке
@@ -230,22 +234,29 @@ api_fill_project_id() {
     # Парсинг json'a для ключа "id"
     local new_project_ids=($(echo $json | awk -F '[:,]' '{for(i=1;i<=NF;i++){if($i ~ /"id"/){gsub(/[[:space:]]|"|/,"",$(i+1)); print $(i+1)}}}'))
 
-    project_ids=("${project_ids[@]}" "${new_project_ids[@]}")
-    project_paths=("${project_paths[@]}" "${new_project_paths[@]}")
+    # Заполнение ассоциативного массива
+    for i in "${!new_project_paths[@]}"; do
+      project_map["${new_project_paths[i]}"]="${new_project_ids[i]}"
+    done
 
     ((page++))
     json=$(curl -s --request GET "$api_url/projects?simple=true&min_access_level=20&per_page=100&page=$page&access_token=$token" | sed 's/,"namespace":{[^}]*}//g')
   done
-  if [ ${#project_ids[@]} -eq 0 ]; then
-    echo "No projects found" >&2
-    return
+
+  # Если не найдено проектов
+  if [ ${#project_map[@]} -eq 0 ]; then
+    return 1
   fi
 
-  print_array_indexed project_paths
+  # Сортировка и вывод
+  local sorted_paths=($(echo "${!project_map[@]}" | tr ' ' '\n' | sort))
+
+  print_array_indexed sorted_paths
 
   local selected_index=$(verified_read "Select project: " "[0-9]+")
-  eval "$1=${project_ids[$((selected_index - 1))]}"
+  eval "$1=${project_map[${sorted_paths[$((selected_index - 1))]}]}"
 }
+
 
 api_fill_branch_name() {
   local project_id=$1
@@ -255,11 +266,12 @@ api_fill_branch_name() {
   local branches=()
   local api_url=$(get_file_value "$config_path" "api_url" 2)
   local token=$(get_file_value "$config_path" "token" 2)
-  local json=$(curl -s --request GET "$api_url/projects/$project_id/repository/branches?access_token=$token")
+  local json=$(curl -s --request GET "$api_url/projects/$project_id/repository/branches?per_page=100&access_token=$token")
   branches=($(echo $json | awk -F '[:,]' '{for(i=1;i<=NF;i++){if($i ~ /"name"/){gsub(/[[:space:]]|"|/,"",$(i+1)); print $(i+1)}}}'))
+
+  # Если не найдено ветвей
   if [ ${#branches[@]} -eq 0 ]; then
-    echo "No branches found" >&2
-    return
+    return 1
   fi
 
   print_array_indexed branches
@@ -267,6 +279,49 @@ api_fill_branch_name() {
   local selected_index=$(verified_read "Select branch: " "[0-9]+")
   eval "$2=${branches[$((selected_index - 1))]}"
 }
+
+api_fill_job_name() {
+  local project_id=$1
+  local branch_name=$2
+  eval "$3=''"
+  
+  echo "Getting jobs..."
+  local jobs=()
+  local page=1
+  local api_url=$(get_file_value "$config_path" "api_url" 2)
+  local token=$(get_file_value "$config_path" "token" 2)
+  # Получение списка успешных работ
+  local json=$(curl -s --request GET "$api_url/projects/$project_id/jobs/?scope[]=success&per_page=100&page=$page&access_token=$token" | sed 's/,"pipeline":{[^}]*}//g; s/,"runner":{[^}]*}//g; s/,"user":{[^}]*}//g')
+  
+  while [ "$json" != "[]" ]; do
+    # Массив названий работ
+    local new_jobs=($(echo $json | awk -F '[:,]' '{for(i=1;i<=NF;i++){if($i ~ /"name"/){gsub(/[[:space:]]|"|/,"",$(i+1)); print $(i+1)}}}'))
+    # Массив веток, которым принадлежат работы
+    local new_job_branches=($(echo $json | awk -F '[:,]' '{for(i=1;i<=NF;i++){if($i ~ /"ref"/){gsub(/[[:space:]]|"|/,"",$(i+1)); print $(i+1)}}}'))
+
+    # Выделение только тех работ, которые принадлежат выбранной ветке
+    for ((i = 0; i < ${#new_jobs[@]}; i++)); do
+      # Проверка на соответствие ветки и наличие работы в массиве (дубликаты не нужны)
+      if [[ ${new_job_branches[$i]} == $branch_name ]] && [[ ! " ${jobs[@]} " =~ " ${new_jobs[$i]} " ]]; then
+        jobs+=(${new_jobs[$i]})
+      fi
+    done
+
+    ((page++))
+    json=$(curl -s --request GET "$api_url/projects/$project_id/jobs/?scope[]=success&per_page=100&page=$page&access_token=$token" | sed 's/,"pipeline":{[^}]*}//g; s/,"runner":{[^}]*}//g; s/,"user":{[^}]*}//g')
+  done
+
+  # Если job'ов не найдено
+  if [ ${#jobs[@]} -eq 0 ]; then
+    return 1
+  fi
+
+  print_array_indexed jobs
+
+  local selected_index=$(verified_read "Select job: " "[0-9]+")
+  eval "$3=${jobs[$((selected_index - 1))]}"
+}
+
 
 api_fill_job_name() {
   local project_id=$1
@@ -292,9 +347,9 @@ api_fill_job_name() {
     fi
   done
 
+  # Если не найдено работ
   if [ ${#jobs[@]} -eq 0 ]; then
-    echo "No jobs found" >&2
-    return
+    return 1
   fi
 
   print_array_indexed jobs
@@ -308,64 +363,86 @@ api_fill_job_name() {
 ############################################
 
 user_api_modification() {
+  if [[ ! -f "$config_path" ]]; then
+    mkdir -p $(dirname $config_path)
+    touch "$config_path"
+    echo -e "api_url\t-" >>"$config_path"
+    echo -e 'token\t-' >>"$config_path"
+  fi
   # Используем verified_read для валидации ввода regex'ом
-  local action=$(verified_read "Choose action (edit [u]rl / edit [t]oken / [p]rint): " "[u|t|p]")
-  case $action in
-  u | U)
-    user_edit_api_url
-    ;;
-  t | T)
-    user_edit_token
-    ;;
-  p | P)
-    echo "API URL: $(get_file_value "$config_path" "api_url" 2)"
-    echo "Token: $(get_file_value "$config_path" "token" 2)"
-    ;;
-  esac
+  while true; do
+    local action=$(verified_read "Choose action (edit [u]rl / edit [t]oken / [p]rint / [q]uit): " "[u|t|p|q]")
+    case $action in
+    u | U)
+      user_edit_api_url
+      ;;
+    t | T)
+      user_edit_token
+      ;;
+    p | P)
+      user_print_config
+      ;;
+    q | Q)
+      break
+      ;;
+    esac
+  done
 }
 
 user_edit_api_url() {
   local new_api_url=$(verified_read "Enter new API URL: " "^[^[:space:]]+$")
-  edit_file_value "$config_path" "api_url" 2 "$new_api_url"
   local test=$(curl -sf --request GET "$new_api_url/projects?simple=true&min_access_level=20")
   if [[ $? -ne 0 || $test != "[]" ]]; then
     echo "API URL is invalid" >&2
+  else 
+    edit_file_value "$config_path" "api_url" 2 "$new_api_url"
+    echo "API URL changed successfully"
   fi
-  echo "API URL changed successfully"
 }
 
 user_edit_token() {
   local new_token=$(verified_read "Enter new token: " "^[^[:space:]]+$")
-  edit_file_value "$config_path" "token" 2 "$new_token"
-  local test=$(curl -sf --request GET "$new_api_url/projects?simple=true&min_access_level=20&access_token=$new_token")
-  if [[ $? -ne 0 || $test == "[]" ]]; then
+  local api_url=$(get_file_value "$config_path" "api_url" 2)
+  local test=$(curl -sf --request GET "$api_url/projects?simple=true&min_access_level=20&access_token=$new_token")
+  if [[ ! $(curl -sf --request GET "$api_url/projects?simple=true&min_access_level=20&access_token=$new_token") || $test == "[]" ]]; then
     echo "Token is invalid" >&2
+  else
+    edit_file_value "$config_path" "token" 2 "$new_token"
+    echo "Token changed successfully"
   fi
-  echo "Token changed successfully"
 }
 
-user_switch_scenario_file() {
-  scenario_path=$(verified_read "Enter new scenario file: " "^[^[:space:]]+$")
-  touch "$scenario_path"
+user_print_config() {
+  local headers=("Key" "Value")
+  print_table "$config_path" "${headers[@]}"
 }
 
 
 user_hosts_modification() {
-  local action=$(verified_read "Choose action ([a]dd / [e]dit / [d]elete / [p]rint): " "[a|e|d|p]")
-  case $action in
-  a | A)
-    user_add_host
-    ;;
-  e | E)
-    user_edit_host
-    ;;
-  d | D)
-    user_delete_host
-    ;;
-  p | P)
-    user_print_hosts
-    ;;
-  esac
+  if [[ ! -f "$hosts_path" ]]; then
+    mkdir -p $(dirname $hosts_path)
+    touch "$hosts_path"
+  fi
+  while true; do
+    local action=$(verified_read "Choose action ([a]dd / [e]dit / [d]elete / [p]rint / [q]uit): " "[a|e|d|p|q]")
+    case $action in
+    a | A)
+      user_add_host
+      ;;
+    e | E)
+      user_edit_host
+      ;;
+    d | D)
+      user_delete_host
+      ;;
+    p | P)
+      user_print_hosts
+      ;;
+    q | Q)
+      break
+      ;;
+    esac
+  done
 }
 
 user_add_host() {
@@ -382,7 +459,7 @@ user_edit_host() {
   print_array_indexed machine_names
 
   local selected_index=$(verified_read "Select machine to edit: " "[0-9]+")
-  local options=("1) Name" "2) IP" "3) Port" "4) Username" "5) Password")
+  local options=("[1] Name" "[2] IP" "[3] Port" "[4] Username" "[5] Password")
   local selected_option=$(verified_read "Select option (${options[*]}): " "[1-5]")
   local selected_machine=${machine_names[$((selected_index - 1))]}
 
@@ -413,30 +490,38 @@ user_delete_host() {
 }
 
 user_print_hosts() {
-  local headers=()
-  print_table "$hosts_path" "Name" "IP" "Port" "Username" "Password"
+  local headers=("Name" "IP" "Port" "Username" "Password")
+  print_table "$hosts_path" "${headers[@]}"
 }
 
-
 user_artifacts_modification() {
-  local action=$(verified_read "Choose action ([a]dd / [e]dit / [c]opy / [d]elete / [p]rint): " "[a|e|c|d|p]")
-  case $action in
-  a | A)
-    user_add_artifact
-    ;;
-  e | E)
-    user_edit_artifact
-    ;;
-  c | C)
-    user_copy_artifact
-    ;;
-  d | D)
-    user_delete_artifact
-    ;;
-  p | P)
-    user_print_artifacts
-    ;;
-  esac
+  if [[ ! -f "$artifacts_path" ]]; then
+    mkdir -p $(dirname $artifacts_path)
+    touch "$artifacts_path"
+  fi
+  while true; do
+    local action=$(verified_read "Choose action ([a]dd / [e]dit / [c]opy / [d]elete / [p]rint / [q]uit): " "[a|e|c|d|p|q]")
+    case $action in
+    a | A)
+      user_add_artifact
+      ;;
+    e | E)
+      user_edit_artifact
+      ;;
+    c | C)
+      user_copy_artifact
+      ;;
+    d | D)
+      user_delete_artifact
+      ;;
+    p | P)
+      user_print_artifacts
+      ;;
+    q | Q)
+      break
+      ;;
+    esac
+  done
 }
 
 user_add_artifact() {
@@ -444,20 +529,20 @@ user_add_artifact() {
   api_fill_project_id project_id
   if [ $project_id -eq 0 ]; then
     echo "No projects found" >&2
-    return
+    return 1
   fi
 
   local branch_name
   api_fill_branch_name $project_id branch_name
   if [ -z $branch_name ]; then
     echo "No branches found" >&2
-    return
+    return 1
   fi
   local job_name
   api_fill_job_name $project_id $branch_name job_name
   if [ -z $job_name ]; then
     echo "No jobs found" >&2
-    return
+    return 1
   fi
 
   local files=$(verified_read "Files (separated by ';') [-]: " "^[^[:space:]]+$" "-")
@@ -474,7 +559,7 @@ user_edit_artifact() {
 
   local selected_index=$(verified_read "Select artifact to edit: " "[0-9]+")
   local selected_artifact=${artifact_names[$((selected_index - 1))]}
-  local options=("1) Name" "2) Project ID" "3) Branch" "4) Job" "5) Files")
+  local options=("[1] Name" "[2] Project ID" "[3] Branch" "[4] Job" "[5] Files")
   local selected_option=$(verified_read "Select option (${options[*]}): " "[1-5]")
 
   case $selected_option in
@@ -567,18 +652,36 @@ user_print_artifacts() {
 }
 
 user_scenario_modification() {
-  local action=$(verified_read "Choose action ([a]dd / [d]elete / [p]rint): " "[a|d|p]")
-  case $action in
-  a | A)
-    user_add_scenario_pair
-    ;;
-  d | D)
-    user_delete_scenario_pair
-    ;;
-  p | P)
-    user_print_scenario_info
-    ;;
-  esac
+  if [[ -z "$scenario_path" ]]; then
+    echo "Scenario path is not specified" >&2
+    echo "Please re-run the script with -s <scenario_path>" >&2
+    verified_read "Press enyer to continue" ""
+    return 1
+  fi
+  if [[ ! -f "$scenario_path" ]]; then
+    mkdir -p $(dirname $scenario_path)
+    touch "$scenario_path"
+  fi
+  while true; do
+    local action=$(verified_read "Choose action ([a]dd / [e]dit / [d]elete / [p]rint / [q]uit): " "[a|e|d|p|q]")
+    case $action in
+    a | A)
+      user_add_scenario_pair
+      ;;
+    d | D)
+      user_delete_scenario_pair
+      ;;
+    e | E)
+      user_edit_scenario_pair
+      ;;
+    p | P)
+      user_print_scenario_info
+      ;;
+    q | Q)
+      break
+      ;;
+    esac
+  done
 }
 
 user_add_scenario_pair() {
@@ -599,6 +702,38 @@ user_add_scenario_pair() {
   echo -e "$data" >>"$scenario_path"
 }
 
+user_edit_scenario_pair() {
+  local scenario_pairs=($(get_file_keys "$scenario_path"))
+  print_array_indexed scenario_pairs
+
+  local selected_index=$(verified_read "Select scenario to edit: " "[0-9]+")
+  local options=("[1] Artifact" "[2] Machine" "[3] Path")
+  local selected_option=$(verified_read "Select option (${options[*]}): " "[1-3]")
+  local selected_scenario=${scenario_pairs[$((selected_index - 1))]}
+
+  case $selected_option in
+  1)
+    local artifact_names=($(get_file_keys "$artifacts_path"))
+    print_array_indexed artifact_names
+    local selected_index=$(verified_read "Select artifact: " "[0-9]+")
+    local selected_artifact=${artifact_names[$((selected_index - 1))]}
+    edit_file_value "$scenario_path" "$selected_scenario" 1 "$selected_artifact"
+    ;;
+  2)
+    local machine_names=($(get_file_keys "$hosts_path"))
+    machine_names+=("Local")
+    print_array_indexed machine_names
+    local selected_index=$(verified_read "Select machine: " "[0-9]+")
+    local selected_machine=${machine_names[$((selected_index - 1))]}
+    edit_file_value "$scenario_path" "$selected_scenario" 2 "$selected_machine"
+    ;;
+  3)
+    local new_path=$(verified_read "New path on machine: " "^[^[:space:]]+$")
+    edit_file_value "$scenario_path" "$selected_scenario" 3 "$new_path"
+    ;;
+  esac
+}
+
 user_delete_scenario_pair() {
   local scenario_pairs=($(get_file_keys "$scenario_path"))
   print_array_indexed scenario_pairs
@@ -616,12 +751,9 @@ user_display_menu() {
   echo ""
   echo "---- Artifacts Deploy ----"
   echo "1) Configure API"
-  echo "2) Switch scenario file"
-  echo "3) Hosts modification"
-  echo "4) Artifacts modification"
-  echo "5) Scenario modification"
-  echo "c) Clear cache"
-  echo "d) Deploy"
+  echo "2) Hosts modification"
+  echo "3) Artifacts modification"
+  echo "4) Scenario modification"
   echo "q) Quit"
   echo "--------------------------"
   echo ""
@@ -636,25 +768,16 @@ main_edit() {
       user_api_modification
       ;;
     2)
-      user_switch_scenario_file
-      ;;
-    3)
       user_hosts_modification
       ;;
-    4)
+    3)
       user_artifacts_modification
       ;;
-    5)
+    4)
       user_scenario_modification
       ;;
-    c | C)
-      rm -rf cache
-      ;;
-    d | D)
-      main_deploy
-      ;;
     q | Q)
-      break
+      exit 0
       ;;
     *)
       echo "Invalid option" >&2
@@ -664,6 +787,11 @@ main_edit() {
 }
 
 main_deploy() {
+  if [[ ! -f "$scenario_path" ]]; then
+    echo "Scenario path is not specified" >&2
+    echo "Please re-run the script with -s <scenario_path>" >&2
+    exit 1
+  fi
   local api_url=$(get_file_value "$config_path" "api_url" 2)
   local token=$(get_file_value "$config_path" "token" 2)
   # Итерируемся по строкам файла сценария, разделяем по табуляции
@@ -684,54 +812,59 @@ main_deploy() {
       local machine_password=$(get_file_value "$hosts_path" "$machine_name" 5)
     fi
     local machine_path=${line[2]}
-    # Если кэша для этого артефакта нет, то скачиваем
-    if [[ ! -d "cache/$artifact_name" ]]; then
-      mkdir -p cache/$artifact_name
-      cd cache/$artifact_name
-      # Если не указаны файлы, то скачиваем архив целиком
-      if [ "${artifact_files[0]}" == "-" ]; then
-        echo "Downloading artifacts for $artifact_name"
-        curl --location --output "artifacts.zip" --request GET "$api_url/projects/$artifact_project_id/jobs/artifacts/$artifact_branch_name/download?job=$artifact_job_name&access_token=$token"
-        unzip artifacts.zip
-        rm artifacts.zip
-      # Иначе скачиваем только указанные файлы
-      else
-        echo "Downloading ${#artifact_files[@]} artifact files for $artifact_name"
-        for file in "${artifact_files[@]}"; do
-          echo "Downloading $file"
-          curl --location --output "$file" --request GET "$api_url/projects/$artifact_project_id/jobs/artifacts/$artifact_branch_name/raw/$file?job=$artifact_job_name&access_token=$token"
-        done
-      fi
-      cd ../..
+    # Скачиваем артефакты
+    rm -rf $cache_path/$artifact_name
+    mkdir -p $cache_path/$artifact_name
+    cd $cache_path/$artifact_name
+    # Если не указаны файлы, то скачиваем архив целиком
+    if [ "${artifact_files[0]}" == "-" ]; then
+      echo "Downloading artifacts for $artifact_name"
+      curl --location --output "artifacts.zip" --request GET "$api_url/projects/$artifact_project_id/jobs/artifacts/$artifact_branch_name/download?job=$artifact_job_name&access_token=$token"
+      unzip artifacts.zip
+      rm artifacts.zip
+    # Иначе скачиваем только указанные файлы
+    else
+      echo "Downloading ${#artifact_files[@]} artifact files for $artifact_name"
+      for file in "${artifact_files[@]}"; do
+        echo "Downloading $file"
+        mkdir -p $(dirname $file)
+        curl --location --output "$file" --request GET "$api_url/projects/$artifact_project_id/jobs/artifacts/$artifact_branch_name/raw/$file?job=$artifact_job_name&access_token=$token"
+      done
     fi
     # Непосредственно деплой
     echo "Deploying to $machine_name($machine_path)"
     # Путь на локальной машине считается относительно ДИРЕКТОРИИ ПОЛЬЗОВАТЕЛЯ
+    # (ну чтобы не было различий с деплоем на удаленные машины)
     if [[ $machine_name == "Local" ]]; then
       if [[ $machine_path != /* ]]; then
         machine_path="$HOME/$machine_path"
       fi
-      cp -r cache/$artifact_name/* $machine_path
+      mkdir -p $machine_path
+      cp -r $cache_path/$artifact_name/* $machine_path
     # Если пароль не указан, подразумеваем что есть беспрепятственный доступ по ключу
     # и используем scp
     elif [[ $machine_password == "-" ]]; then
-      scp -P $machine_port -r cache/$artifact_name/* $machine_username@$machine_ip:$machine_path
+      ssh -P $machine_port $machine_username@$machine_ip "mkdir -p $machine_path"
+      scp -P $machine_port -r $cache_path/$artifact_name/* $machine_username@$machine_ip:$machine_path
     # Иначе используем sftp с sshpass
     else
+      ssh -P $machine_port $machine_username@$machine_ip "mkdir -p $machine_path"
       SSHPASS=$machine_password sshpass -e sftp -P $machine_port -oBatchMode=no -b - "$machine_username@$machine_ip" <<EOF
-lcd cache/$artifact_name
-cd $directory
+lcd $cache_path/$artifact_name
+cd $machine_path
 put -r *
 bye
 EOF
     fi
   done <"$scenario_path"
+  rm -rf $cache_path
 }
 
-artifacts_path=".artifacts"
-config_path=".deployconfig"
-hosts_path=".hosts"
-scenario_path="main.dsc"
+artifacts_path="$HOME/.config/artifacts-deploy/.artifacts"
+config_path="$HOME/.config/artifacts-deploy/.deployconfig"
+hosts_path="$HOME/.config/artifacts-deploy/.hosts"
+cache_path="$HOME/.config/artifacts-deploy/cache" # лучше не менять, так как используется rm -rf
+scenario_path=""
 edit_mode=true
 
 # Парсинг аргументов командной строки
@@ -740,22 +873,18 @@ while [[ $# -gt 0 ]]; do
   # -a или --artifacts
   -a | --artifacts)
     artifacts_path="$2"
-    echo "Artifacts path: $artifacts_path"
     shift 2
     ;;
   -h | --hosts)
     hosts_path="$2"
-    echo "Hosts path: $hosts_path"
     shift 2
     ;;
   -c | --config)
     config_path="$2"
-    echo "Config path: $config_path"
     shift 2
     ;;
   -s | --scenario)
     scenario_path="$2"
-    echo "Scenario path: $scenario_path"
     shift 2
     ;;
   -p)
@@ -769,17 +898,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-touch "$artifacts_path"
-touch "$hosts_path"
-touch "$scenario_path"
-
-if [[ ! -f "$config_path" ]]; then
-  touch "$config_path"
-  echo -e "api_url\t-" >>"$config_path"
-  echo -e 'token\t-' >>"$config_path"
-fi
-
 if [ "$edit_mode" = true ]; then
+  stty -echoctl
+  trap 'main_edit' SIGINT 
   main_edit
 else
   main_deploy
