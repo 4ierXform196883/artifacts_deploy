@@ -156,6 +156,10 @@ print_table() {
     echo "File $file does not exist"
     return 1
   fi
+  if [ ! -s $file ]; then
+    echo "File $file is empty"
+    return 1
+  fi
   shift
   # остальные - заголовки столбцов
   local colNames=("$@")
