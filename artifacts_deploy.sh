@@ -166,7 +166,7 @@ print_table() {
   while IFS=$'\t' read -r -a line; do
     # Итерируемся по элементам строки, index - номер элемента
     for index in "${!line[@]}"; do
-      
+
       # Если индекс больше длины массива, то добавляем новый столбец
       if ((index >= ${#data[@]})); then
         # Объявляем новый столбец
@@ -217,7 +217,7 @@ api_fill_project_id() {
   local page=1
   local api_url=$(get_file_value "$config_path" "api_url" 2)
   local token=$(get_file_value "$config_path" "token" 2)
-  
+
   # Получение списка проектов
   # sed используется для удаления вложенного json'a под ключом "namespace" целиком
   # он не нужен и содежрит поле "id", что помешает парсингу в следующей строке
@@ -284,7 +284,7 @@ api_fill_job_name() {
   local project_id=$1
   local branch_name=$2
   eval "$3=''"
-  
+
   echo "Getting jobs..."
   local jobs=()
   local page=1
@@ -292,7 +292,7 @@ api_fill_job_name() {
   local token=$(get_file_value "$config_path" "token" 2)
   # Получение списка успешных работ
   local json=$(curl -s --request GET "$api_url/projects/$project_id/jobs/?scope[]=success&per_page=100&page=$page&access_token=$token" | sed 's/,"pipeline":{[^}]*}//g; s/,"runner":{[^}]*}//g; s/,"user":{[^}]*}//g')
-  
+
   while [ "$json" != "[]" ]; do
     # Массив названий работ
     local new_jobs=($(echo $json | awk -F '[:,]' '{for(i=1;i<=NF;i++){if($i ~ /"name"/){gsub(/[[:space:]]|"|/,"",$(i+1)); print $(i+1)}}}'))
@@ -371,7 +371,9 @@ user_api_modification() {
   fi
   # Используем verified_read для валидации ввода regex'ом
   while true; do
+    echo ""
     local action=$(verified_read "Choose action (edit [u]rl / edit [t]oken / [p]rint / [q]uit): " "[u|t|p|q]")
+    echo ""
     case $action in
     u | U)
       user_edit_api_url
@@ -394,7 +396,7 @@ user_edit_api_url() {
   local test=$(curl -sf --request GET "$new_api_url/projects?simple=true&min_access_level=20")
   if [[ $? -ne 0 || $test != "[]" ]]; then
     echo "API URL is invalid" >&2
-  else 
+  else
     edit_file_value "$config_path" "api_url" 2 "$new_api_url"
     echo "API URL changed successfully"
   fi
@@ -424,7 +426,9 @@ user_hosts_modification() {
     touch "$hosts_path"
   fi
   while true; do
+    echo ""
     local action=$(verified_read "Choose action ([a]dd / [e]dit / [d]elete / [p]rint / [q]uit): " "[a|e|d|p|q]")
+    echo ""
     case $action in
     a | A)
       user_add_host
@@ -500,7 +504,9 @@ user_artifacts_modification() {
     touch "$artifacts_path"
   fi
   while true; do
+    echo ""
     local action=$(verified_read "Choose action ([a]dd / [e]dit / [c]opy / [d]elete / [p]rint / [q]uit): " "[a|e|c|d|p|q]")
+    echo ""
     case $action in
     a | A)
       user_add_artifact
@@ -655,7 +661,7 @@ user_scenario_modification() {
   if [[ -z "$scenario_path" ]]; then
     echo "Scenario path is not specified" >&2
     echo "Please re-run the script with -s <scenario_path>" >&2
-    verified_read "Press enyer to continue" ""
+    verified_read "Press enter to continue" ""
     return 1
   fi
   if [[ ! -f "$scenario_path" ]]; then
@@ -663,7 +669,9 @@ user_scenario_modification() {
     touch "$scenario_path"
   fi
   while true; do
+    echo ""
     local action=$(verified_read "Choose action ([a]dd / [e]dit / [d]elete / [p]rint / [q]uit): " "[a|e|d|p|q]")
+    echo ""
     case $action in
     a | A)
       user_add_scenario_pair
@@ -761,8 +769,10 @@ user_display_menu() {
 
 main_edit() {
   while true; do
+    is_main=true
     user_display_menu
     read -p "Enter option: " -r option
+    is_main=false
     case $option in
     1)
       user_api_modification
@@ -784,6 +794,14 @@ main_edit() {
       ;;
     esac
   done
+}
+
+handle_sigint() {
+  if [ "$is_main" = false ]; then
+    main_edit
+  else
+    exit 1
+  fi
 }
 
 main_deploy() {
@@ -866,6 +884,7 @@ hosts_path="$HOME/.config/artifacts-deploy/.hosts"
 cache_path="$HOME/.config/artifacts-deploy/cache" # лучше не менять, так как используется rm -rf
 scenario_path=""
 edit_mode=true
+is_main=true
 
 # Парсинг аргументов командной строки
 while [[ $# -gt 0 ]]; do
@@ -900,7 +919,7 @@ done
 
 if [ "$edit_mode" = true ]; then
   stty -echoctl
-  trap 'main_edit' SIGINT 
+  trap 'handle_sigint' SIGINT
   main_edit
 else
   main_deploy
