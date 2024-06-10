@@ -870,7 +870,7 @@ main_deploy() {
       scp -P $machine_port -r $cache_path/$artifact_name/* $machine_username@$machine_ip:$machine_path
     # Иначе используем sftp с sshpass
     else
-      ssh -P $machine_port $machine_username@$machine_ip "mkdir -p $machine_path"
+      SSHPASS=$machine_password sshpass -e ssh -P $machine_port $machine_username@$machine_ip "mkdir -p $machine_path"
       SSHPASS=$machine_password sshpass -e sftp -P $machine_port -oBatchMode=no -b - "$machine_username@$machine_ip" <<EOF
 lcd $cache_path/$artifact_name
 cd $machine_path
